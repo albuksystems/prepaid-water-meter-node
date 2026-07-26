@@ -1,1 +1,93 @@
+#include <Arduino.h>
 
+// --- Pin Definitions ---
+const uint8_t FLOW_SENSOR_PIN = 18; // Connect YF-S201 Yellow Wire (Data) to GPIO 18
+const uint8_t RELAY_PIN       = 26; // Optional: Relay pin to shut off valve
+
+// --- Calibration Factor ---
+// Standard YF-S201 outputs approx 450 pulses per liter (7.5 Hz * 60 seconds).
+// Adjust this number during physical bench testing using a measuring cylinder.
+const float PULSES_PER_LITER = 450.0; 
+
+// --- Volatile Variables for Interrupt Service Routine (ISR) ---
+// Must be marked 'volatile' because it is modified inside the interrupt handler.
+volatile uint32_t pulseCount = 0;
+
+// System tracking variables
+unsigned long lastCalcTime = 0;
+float totalVolumeLiters = 0.0;
+float currentFlowRateLmin = 0.0;
+
+// --- Interrupt Service Routine (ISR) ---
+// Keep ISRs as short as humanly possible!
+void IRAM_ATTR flowPulseISR() {
+  pulseCount++;
+}
+
+void setup() {
+  Serial.begin(115200);
+
+  // Configure Flow Sensor Pin with Internal Pullup
+  pinMode(FLOW_SENSOR_PIN, INPUT_PULLUP);
+  
+  // Configure Relay Control Pin
+  pinMode(RELAY_PIN, OUTPUT);
+  digitalWrite(RELAY_PIN, HIGH); // Off initially
+
+  // Attach Hardware Interrupt: Triggers on RISING edge (signal goes from LOW to HIGH)
+  attachInterrupt(digitalPinToInterrupt(FLOW_SENSOR_PIN), flowPulseISR, RISING);
+
+  Serial.println("=========================================");
+  Serial.println(" YF-S201 Flow Meter Initialized");
+  Serial.println("=========================================");
+  
+  lastCalcTime = millis();
+}
+
+void loop() {
+  unsigned long currentTime = millis();
+
+  // Calculate flow rate and volume every 1 second (1000 ms)
+  if (currentTime - lastCalcTime >= 1000) {
+    
+    // --- Critical Section: Safely read interrupt counter ---
+    // Disable interrupts briefly while reading and clearing the pulse count
+    noInterrupts();
+    uint32_t currentPulses = pulseCount;
+    pulseCount = 0; // Reset counter for the next 1-second interval
+    interrupts();
+
+    // Time elapsed in seconds
+    float elapsedTimeSec = (currentTime - lastCalcTime) / 1000.0;
+    lastCalcTime = currentTime;
+
+    // --- Calculations ---
+    // Flow Rate (L/min) = (Pulses in interval / Calibration Factor) * (60s / elapsed time)
+    currentFlowRateLmin = (currentPulses / PULSES_PER_LITER) * (60.0 / elapsedTimeSec);
+
+    // Total Volume Accumulation (Liters)
+    float intervalLiters = (currentPulses / PULSES_PER_LITER);
+    totalVolumeLiters += intervalLiters;
+
+    // --- Output Readings ---
+    Serial.print("Flow Rate: ");
+    Serial.print(currentFlowRateLmin, 2);
+    Serial.print(" L/min | ");
+    
+    Serial.print("Interval Volume: ");
+    Serial.print(intervalLiters * 1000.0, 1); // Convert to mL for precision view
+    Serial.print(" mL | ");
+
+    Serial.print("Total Volume: ");
+    Serial.print(totalVolumeLiters, 3);
+    Serial.println(" Liters");
+  }
+
+  // --- Example Dispensing Logic (Cutoff at 1.0 Liter) ---
+  /*
+  if (totalVolumeLiters >= 1.0) {
+    digitalWrite(RELAY_PIN, HIGH); // Close valve
+    Serial.println(">>> TARGET VOLUME REACHED: Valve Closed. <<<");
+  }
+  */
+}
